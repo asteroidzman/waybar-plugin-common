@@ -41,6 +41,7 @@ struct WbPop {
   WbPopRebuildFn rebuild;      // fills win with fresh content before each show
   gpointer user;
   int pill_x, pill_w, bar_w, pop_top, armed;
+  int last_mx, last_my;        // margins already committed (skip no-op recenters)
   guint close_src;             // debounced focus-loss close
 };
 
@@ -102,6 +103,12 @@ static gboolean wbpop_recenter(gpointer d) {
   int my = p->pop_top;
   if (sh > 0 && my + h > sh - 4) my = sh - h - 4;
   if (my < 4) my = 4;
+  // Only touch the surface when the pre-map position was actually wrong: a
+  // post-map margin change is a geometry change, which the compositor
+  // animates (layer MOVE) — needlessly re-committing made every popup slide
+  // and its blur backdrop settle visibly late.
+  if (mx == p->last_mx && my == p->last_my) return G_SOURCE_REMOVE;
+  p->last_mx = mx; p->last_my = my;
   gtk_layer_set_margin(GTK_WINDOW(p->win), GTK_LAYER_SHELL_EDGE_LEFT, mx);
   gtk_layer_set_margin(GTK_WINDOW(p->win), GTK_LAYER_SHELL_EDGE_TOP, my);
   gtk_widget_queue_resize(p->win);   // force a commit so the margin lands
@@ -133,6 +140,7 @@ static G_GNUC_UNUSED void wbpop_show(WbPop *p) {
   gtk_layer_set_margin(GTK_WINDOW(p->win), GTK_LAYER_SHELL_EDGE_LEFT, mx);
   p->pop_top = yb > 0 ? yb + 2 : 60;
   gtk_layer_set_margin(GTK_WINDOW(p->win), GTK_LAYER_SHELL_EDGE_TOP, p->pop_top);
+  p->last_mx = mx; p->last_my = p->pop_top;
   // Singleton: hide whichever wbcommon popup (any plugin) is currently open.
   if (GTK_IS_WINDOW(top)) {
     GtkWidget *prev = g_object_get_data(G_OBJECT(top), WBPOP_OPEN_KEY);

@@ -50,6 +50,12 @@ struct WbPop {
 static G_GNUC_UNUSED void wbpop_hide(WbPop *p) {
   if (p->close_src) { g_source_remove(p->close_src); p->close_src = 0; }
   gtk_widget_hide(p->win);
+  // Destroy the wl surface, not just hide it: gtk-layer-shell keeps the layer
+  // surface alive across hide/show (hidden = empty buffer), so the compositor
+  // would keep its per-surface blur state — sized/masked for the LARGEST
+  // content this popup ever had — and paint a stale blur slab under smaller
+  // content on reopen. A fresh surface per open gets fresh blur state.
+  gtk_widget_unrealize(p->win);
   GtkWidget *top = gtk_widget_get_toplevel(p->anchor);
   if (GTK_IS_WINDOW(top) && g_object_get_data(G_OBJECT(top), WBPOP_OPEN_KEY) == p->win)
     g_object_set_data(G_OBJECT(top), WBPOP_OPEN_KEY, NULL);
@@ -118,11 +124,6 @@ static gboolean wbpop_recenter(gpointer d) {
 static G_GNUC_UNUSED void wbpop_show(WbPop *p) {
   g_object_set_data(G_OBJECT(p->win), "wb-focus", NULL);   // rebuild sets a fresh one
   p->rebuild(p->user);
-  // A realized GtkWindow never shrinks below its largest allocation on its
-  // own — after tall content (an open editor, a long list) later shows would
-  // keep the stale height as an empty slab. Renegotiate from scratch; content
-  // size-requests provide the floor.
-  gtk_window_resize(GTK_WINDOW(p->win), 1, 1);
   GtkWidget *top = gtk_widget_get_toplevel(p->anchor);
   int x = 0, y = 0, yb = 0, dummy = 0;
   if (GTK_IS_WIDGET(top)) {
@@ -138,6 +139,13 @@ static G_GNUC_UNUSED void wbpop_show(WbPop *p) {
   // the natural size NOW and put the final position in the initial configure.
   GtkRequisition nat = {0, 0};
   gtk_widget_get_preferred_size(p->win, NULL, &nat);
+  // Size the window to exactly the width we clamp with, and forget any stale
+  // height (a realized GtkWindow never shrinks on its own — tall past content
+  // would linger as an empty slab). Resizing to 1x1 instead would map at
+  // MINIMUM size and disagree with the natural-size clamp above, making
+  // recenter do a real post-map move — animated by the compositor, with the
+  // blur backdrop visibly settling late (the weather-popup band/flicker).
+  gtk_window_resize(GTK_WINDOW(p->win), nat.width > 1 ? nat.width : 1, 1);
   int mx = x + p->pill_w / 2 - nat.width / 2;
   if (p->bar_w > 0 && nat.width > 0 && mx + nat.width > p->bar_w - 4)
     mx = p->bar_w - nat.width - 4;
@@ -147,9 +155,13 @@ static G_GNUC_UNUSED void wbpop_show(WbPop *p) {
   gtk_layer_set_margin(GTK_WINDOW(p->win), GTK_LAYER_SHELL_EDGE_TOP, p->pop_top);
   p->last_mx = mx; p->last_my = p->pop_top;
   // Singleton: hide whichever wbcommon popup (any plugin) is currently open.
+  // Unrealize it too — see wbpop_hide for why the surface must not linger.
   if (GTK_IS_WINDOW(top)) {
     GtkWidget *prev = g_object_get_data(G_OBJECT(top), WBPOP_OPEN_KEY);
-    if (prev && prev != p->win && gtk_widget_get_visible(prev)) gtk_widget_hide(prev);
+    if (prev && prev != p->win && gtk_widget_get_visible(prev)) {
+      gtk_widget_hide(prev);
+      gtk_widget_unrealize(prev);
+    }
     g_object_set_data(G_OBJECT(top), WBPOP_OPEN_KEY, p->win);
   }
   p->armed = 0;
@@ -167,7 +179,9 @@ static G_GNUC_UNUSED int wbpop_visible(WbPop *p) { return gtk_widget_get_visible
 // editor toggling): shrink/grow the window to the new content and re-clamp.
 static G_GNUC_UNUSED void wbpop_refit(WbPop *p) {
   if (!gtk_widget_get_visible(p->win)) return;
-  gtk_window_resize(GTK_WINDOW(p->win), 1, 1);
+  GtkRequisition nat = {0, 0};
+  gtk_widget_get_preferred_size(p->win, NULL, &nat);
+  gtk_window_resize(GTK_WINDOW(p->win), nat.width > 1 ? nat.width : 1, 1);
   g_idle_add(wbpop_recenter, p);
 }
 

@@ -118,6 +118,11 @@ static gboolean wbpop_recenter(gpointer d) {
 static G_GNUC_UNUSED void wbpop_show(WbPop *p) {
   g_object_set_data(G_OBJECT(p->win), "wb-focus", NULL);   // rebuild sets a fresh one
   p->rebuild(p->user);
+  // A realized GtkWindow never shrinks below its largest allocation on its
+  // own — after tall content (an open editor, a long list) later shows would
+  // keep the stale height as an empty slab. Renegotiate from scratch; content
+  // size-requests provide the floor.
+  gtk_window_resize(GTK_WINDOW(p->win), 1, 1);
   GtkWidget *top = gtk_widget_get_toplevel(p->anchor);
   int x = 0, y = 0, yb = 0, dummy = 0;
   if (GTK_IS_WIDGET(top)) {
@@ -157,6 +162,14 @@ static G_GNUC_UNUSED void wbpop_show(WbPop *p) {
 }
 
 static G_GNUC_UNUSED int wbpop_visible(WbPop *p) { return gtk_widget_get_visible(p->win); }
+
+// For plugins that rebuild content while the popup is OPEN (e.g. an inline
+// editor toggling): shrink/grow the window to the new content and re-clamp.
+static G_GNUC_UNUSED void wbpop_refit(WbPop *p) {
+  if (!gtk_widget_get_visible(p->win)) return;
+  gtk_window_resize(GTK_WINDOW(p->win), 1, 1);
+  g_idle_add(wbpop_recenter, p);
+}
 
 static G_GNUC_UNUSED void wbpop_toggle(WbPop *p) {
   if (wbpop_visible(p)) wbpop_hide(p); else wbpop_show(p);

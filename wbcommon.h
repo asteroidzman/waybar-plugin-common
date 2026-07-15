@@ -136,16 +136,17 @@ static G_GNUC_UNUSED void wbpop_show(WbPop *p) {
   p->bar_w = GTK_IS_WIDGET(top) ? gtk_widget_get_allocated_width(top) : 0;
   // Pre-map clamp: margins set after map only reach the compositor with the
   // next buffer commit (which may never come for a static popup), so measure
-  // the natural size NOW and put the final position in the initial configure.
+  // NOW and put the final position in the initial configure. Measure the
+  // MINIMUM size: that is what a layer window actually maps at after a
+  // resize — natural is inflated by ellipsized labels' full-text width, and
+  // configuring the surface wider than the buffer left the compositor's blur
+  // node oversized (the dark-rectangle / square-corner artifacts). Content
+  // boxes set width requests, so minimum == the designed popup width.
   GtkRequisition nat = {0, 0};
-  gtk_widget_get_preferred_size(p->win, NULL, &nat);
-  // Size the window to exactly the width we clamp with, and forget any stale
-  // height (a realized GtkWindow never shrinks on its own — tall past content
-  // would linger as an empty slab). Resizing to 1x1 instead would map at
-  // MINIMUM size and disagree with the natural-size clamp above, making
-  // recenter do a real post-map move — animated by the compositor, with the
-  // blur backdrop visibly settling late (the weather-popup band/flicker).
-  gtk_window_resize(GTK_WINDOW(p->win), nat.width > 1 ? nat.width : 1, 1);
+  gtk_widget_get_preferred_size(p->win, &nat, NULL);
+  // Forget any stale height from taller past content (a realized GtkWindow
+  // never shrinks on its own); the window re-maps at the minimum measured above.
+  gtk_window_resize(GTK_WINDOW(p->win), 1, 1);
   int mx = x + p->pill_w / 2 - nat.width / 2;
   if (p->bar_w > 0 && nat.width > 0 && mx + nat.width > p->bar_w - 4)
     mx = p->bar_w - nat.width - 4;
@@ -166,7 +167,19 @@ static G_GNUC_UNUSED void wbpop_show(WbPop *p) {
   }
   p->armed = 0;
   if (p->close_src) { g_source_remove(p->close_src); p->close_src = 0; }
+  // The window is unrealized on every hide; make sure the re-realize picks the
+  // rgba visual back up before mapping.
+  if (!gtk_widget_get_realized(p->win)) {
+    GdkVisual *rgba = gdk_screen_get_rgba_visual(gtk_widget_get_screen(p->win));
+    if (rgba) gtk_widget_set_visual(p->win, rgba);
+  }
   gtk_widget_show_all(p->win);
+  // Never advertise an opaque region: the compositor culls everything under
+  // an opaque surface, so the live blur's "content so far" blend image stays
+  // unrendered (black) beneath the popup — the popup then blurs blackness
+  // (dark rectangles of stale damage history) instead of the real backdrop.
+  { GdkWindow *gw = gtk_widget_get_window(p->win);
+    if (gw) gdk_window_set_opaque_region(gw, NULL); }
   GtkWidget *focus = g_object_get_data(G_OBJECT(p->win), "wb-focus");
   gtk_widget_grab_focus(focus ? focus : p->win);
   g_timeout_add(250, wbpop_arm_cb, p);
@@ -179,9 +192,7 @@ static G_GNUC_UNUSED int wbpop_visible(WbPop *p) { return gtk_widget_get_visible
 // editor toggling): shrink/grow the window to the new content and re-clamp.
 static G_GNUC_UNUSED void wbpop_refit(WbPop *p) {
   if (!gtk_widget_get_visible(p->win)) return;
-  GtkRequisition nat = {0, 0};
-  gtk_widget_get_preferred_size(p->win, NULL, &nat);
-  gtk_window_resize(GTK_WINDOW(p->win), nat.width > 1 ? nat.width : 1, 1);
+  gtk_window_resize(GTK_WINDOW(p->win), 1, 1);   // re-maps at minimum (see wbpop_show)
   g_idle_add(wbpop_recenter, p);
 }
 

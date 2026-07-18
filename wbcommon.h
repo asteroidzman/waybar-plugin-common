@@ -97,11 +97,19 @@ static gboolean wbpop_recenter(gpointer d) {
   int w = gtk_widget_get_allocated_width(p->win);
   int h = gtk_widget_get_allocated_height(p->win);
   if (w < 8) return G_SOURCE_CONTINUE;   // not allocated yet — retry next idle
+  // Width: trust bar_w (the bar's own allocated width, same value wbpop_show's
+  // already-correct pre-map clamp uses), not gdk_monitor_get_geometry — that
+  // lookup is unreliable on this compositor's non-standard sub-1.0 output
+  // scales (e.g. 0.75) and can resolve to the WRONG monitor's (wider) width,
+  // letting the popup overflow past the real edge on a switch-triggered refit
+  // (reproduced: the Display tab, wider than Wallpaper, rendered past the
+  // right edge of a 0.75-scale monitor). Height has no such alternative, so
+  // it still comes from the GDK lookup.
   int sw = p->bar_w, sh = 0;
   GdkWindow *gw = gtk_widget_get_window(p->win);
   if (gw) {
     GdkMonitor *m = gdk_display_get_monitor_at_window(gtk_widget_get_display(p->win), gw);
-    if (m) { GdkRectangle g; gdk_monitor_get_geometry(m, &g); sw = g.width; sh = g.height; }
+    if (m) { GdkRectangle g; gdk_monitor_get_geometry(m, &g); sh = g.height; }
   }
   int mx = p->pill_x + p->pill_w / 2 - w / 2;
   if (sw > 0 && mx + w > sw - 4) mx = sw - w - 4;
@@ -189,10 +197,18 @@ static G_GNUC_UNUSED void wbpop_show(WbPop *p) {
 static G_GNUC_UNUSED int wbpop_visible(WbPop *p) { return gtk_widget_get_visible(p->win); }
 
 // For plugins that rebuild content while the popup is OPEN (e.g. an inline
-// editor toggling): shrink/grow the window to the new content and re-clamp.
+// editor toggling, or a tab switch): shrink/grow the window to the new
+// content and re-clamp.
 static G_GNUC_UNUSED void wbpop_refit(WbPop *p) {
   if (!gtk_widget_get_visible(p->win)) return;
   gtk_window_resize(GTK_WINDOW(p->win), 1, 1);   // re-maps at minimum (see wbpop_show)
+  // A content change (e.g. a tab switch) can make GTK resubmit an opaque
+  // region hint on the new commit; wbpop_show clears this on open for
+  // exactly this reason (an opaque region makes the compositor cull
+  // whatever's behind — the live blur backdrop — leaving stale content
+  // visible there), but a refit never re-clears it. Match wbpop_show here.
+  { GdkWindow *gw = gtk_widget_get_window(p->win);
+    if (gw) gdk_window_set_opaque_region(gw, NULL); }
   g_idle_add(wbpop_recenter, p);
 }
 

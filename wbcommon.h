@@ -28,6 +28,8 @@
 #include <gdk/gdkkeysyms.h>
 #include <gio/gio.h>
 #include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
 
@@ -236,6 +238,44 @@ static G_GNUC_UNUSED void wbpop_init(WbPop *p, GtkWidget *anchor,
   gtk_widget_add_events(p->win, GDK_KEY_PRESS_MASK);
   g_signal_connect(p->win, "key-press-event", G_CALLBACK(wbpop_key_cb), p);
   g_signal_connect(p->win, "notify::has-toplevel-focus", G_CALLBACK(wbpop_focus_cb), p);
+}
+
+// Test-harness hook: with WBTEST_DUMP_GEOM set in the environment, print the
+// anchor pill's position/size (relative to the bar's own top-level surface --
+// Wayland gives clients no absolute desktop coordinates, so a test driver
+// must add the bar's own monitor offset itself), so a headless test
+// compositor can locate and click the pill without hardcoding bar geometry.
+//
+// Hooked to "draw", not "size-allocate": a right-aligned pill's OWN
+// allocation (as handed down by its direct parent) can stay identical across
+// layout passes even while its ABSOLUTE position moves, because what
+// actually shifted was an ANCESTOR box being repositioned -- GTK only
+// re-invokes size-allocate (and re-fires the signal) on a child whose
+// allocation relative to its direct parent changed, so that leaves this
+// stuck reporting a stale first-layout position. "draw" only ever fires
+// once layout has fully resolved for that frame, so it always reflects
+// where the pill really ended up.
+static void wbtest_dump_geom_cb(GtkWidget *w, gpointer name) {
+  GtkWidget *top = gtk_widget_get_toplevel(w);
+  if (!GTK_IS_WINDOW(top)) return;
+  int lx = 0, ly = 0;
+  gtk_widget_translate_coordinates(w, top, 0, 0, &lx, &ly);
+  GtkAllocation a;
+  gtk_widget_get_allocation(w, &a);
+  fprintf(stderr, "WBTEST_GEOM name=%s x=%d y=%d w=%d h=%d\n",
+          (const char *)name, lx, ly, a.width, a.height);
+}
+static gboolean wbtest_dump_geom_draw_cb(GtkWidget *w, cairo_t *cr,
+                                          gpointer name) {
+  (void)cr;
+  wbtest_dump_geom_cb(w, name);
+  return FALSE;
+}
+
+static G_GNUC_UNUSED void wbpop_enable_geom_dump(WbPop *p, const char *name) {
+  if (!getenv("WBTEST_DUMP_GEOM")) return;
+  g_signal_connect_after(p->anchor, "draw",
+                          G_CALLBACK(wbtest_dump_geom_draw_cb), (gpointer)name);
 }
 
 static G_GNUC_UNUSED void wbpop_destroy(WbPop *p) {

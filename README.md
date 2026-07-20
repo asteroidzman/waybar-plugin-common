@@ -1,7 +1,7 @@
 # waybar-plugin-common
 
 Shared header-only helpers for the asteroidzman waybar CFFI plugins
-(sysmon, network, volume, medication, weather, media-cava).
+(sysmon, network, volume, medication, weather, media-cava, display).
 
 - **WbPop** — content-sized layer-shell popup under a bar pill: blurred
   (`waybar-popup` namespace), clamped on-screen on every edge, Escape +
